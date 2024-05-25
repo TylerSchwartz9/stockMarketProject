@@ -1,127 +1,75 @@
-import yfinance as yf
-from datetime import datetime, timedelta
-import time
-import streamlit as st
+import requests
+from bs4 import BeautifulSoup
 import pandas as pd
+import streamlit as st
+import yfinance as yf
 
-# Gets most recent price?
-def get_recent_price(ticker_symbol):
-    # Create a Ticker object for the specified stock
-    stock_ticker = yf.Ticker(ticker_symbol)
-    
-            # Fetch historical data for the last trading day with 1-minute intervals
-    minute_data = stock_ticker.history(period='1d', interval='1m')
-        
-            # Extract the most recent minute's data
-    if not minute_data.empty:
-        latest_minute_data = minute_data.iloc[-1]
-            
-            # Print or process the data as needed
-        recent_price = latest_minute_data['Close']
 
-        return recent_price
+
+def ticker_symbol(url):
+    stocks =[]
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    names = soup.find_all(attrs={'data-test': 'quoteLink'})
+    for stock in names:
+        stocks.append(stock.text)
+    return stocks
+
+def convert_volume(entry):
+    if 'M' in entry:
+        return float(entry.replace(',', '').rstrip('M')) * 1000000
     else:
-        return None
+        return float(entry.replace(',', ''))
 
-        
-          # Wait for 1 minute before fetching the next update
-
-def first_open_price(ticker_symbol):
-    # Create a Ticker object for the specified stock
-    stock_ticker = yf.Ticker(ticker_symbol)
-
-    # Fetch historical intraday data for the current day with 1-minute intervals
-    intraday_data = stock_ticker.history(period='1d', interval='1m')
-
-    # Extract the first open price of the day
-    first_open_price = intraday_data.loc[intraday_data.index.date == datetime.today().date(), 'Open'].iloc[0]
-
-    return first_open_price
-
-
-def get_recent_volume(ticker_symbol):
-    # Create a Ticker object for the specified stock
-    stock_ticker = yf.Ticker(ticker_symbol)
-    
-        # Fetch historical data for the last trading day with 1-minute intervals
-    minute_data = stock_ticker.history(period='1d', interval='1m', prepost = True)
-            
-        # Extract the most recent minute's data
-    total_volume = minute_data['Volume'].sum()
-            
-    return total_volume
-
-def average_volume_stock(ticker_symbol):
-     # Create a Ticker object for the specified stock
-    stock_ticker = yf.Ticker(ticker_symbol)
-
-    # Calculate the start and end dates for the last 30 trading days
-    end_date = datetime.today().strftime('%Y-%m-%d')
-    start_date = (datetime.today() - timedelta(days=3)).strftime('%Y-%m-%d')
-
-    # Get historical data for the last 3 trading days
-    historical_data = stock_ticker.history(start=start_date, end=end_date)
-
-    # Calculate the average volume for the last 30 days
-    average_volume = historical_data['Volume'].mean()
-
-    return average_volume
-
-def check_volume(ticker_symbol):
-    average_volume = average_volume_stock(ticker_symbol)
-    current_volume = get_recent_volume(ticker_symbol)
-
-    if current_volume >= 5 * average_volume:
-        return True
-    else:
-        return False
-    
-def quality_stock(ticker_symbol):
-    recent_price = float(get_recent_price(ticker_symbol))
-    first_open = float(first_open_price(ticker_symbol))
-    enough_volume = check_volume(ticker_symbol)
-
-    return (recent_price >= 5 and recent_price <= 20) and (((recent_price - first_open) / first_open) * 100 >= 10) and (enough_volume == True)
-
-def analyze_stocks(stock_list):
-    results = {}
-    for ticker in stock_list:
-        results[ticker] = quality_stock(ticker)
-    boolean_values = tuple(results.values())
-    return boolean_values
-
-
-def update_df(stock_list):
+#@st.cache_data
+def get_important_data(_soup):
     data = []
-    for ticker in stock_list:
-        recent_price = get_recent_price(ticker)
-        recent_volume = get_recent_volume(ticker)
-        first_open = first_open_price(ticker)
+    prices = []
+    percent_change = []
+    current_volume = []
+    average_volume = []
+    all_data = soup.find_all(attrs={'data-test': 'colorChange'})
+    average_volume_data = soup.find_all(attrs={'aria-label': 'Avg Vol (3 month)'})
+    for value in average_volume_data:
+        average_volume.append(value.text)
 
-        percent_increase = ((recent_price - first_open) / first_open) * 100
-        meets_conditions = quality_stock(ticker)
+    for values in all_data:
+        data.append(values.text)
+    prices = [float(entry.replace(',', '')) for entry in data[::5]]
+    percent_change = [float(entry[:-1]) for entry in data[2::5]]
+    current_volume = [convert_volume(entry) for entry in data[3::5]]
+    market_size = [entry for entry in data[4::5]]
+    new_average_volume = [convert_volume(entry) for entry in average_volume]
 
-        data.append({
-            "Stock" : ticker,
-            "Price" : recent_price,
-            "Volume" : recent_volume,
-            "Percent Increase" : percent_increase,
-            "Meets Conditions" : meets_conditions
-        })
+    meets_conditions = [
+        (current_val >= (5 * avg_val)) and (5 <= price <= 20) and (percent_change >= 10)
+        for current_val, avg_val, price, percent_change in zip(current_volume, new_average_volume, prices, percent_change)
+    ]
 
-    return pd.DataFrame(data)
-
-stock_list = [
-    "AVGR", "BLDP", "CETX", "CRIS","DMRC", "ELTK", "ENSV", "FTEK",
-    "IMTE", "INUV", "KOPN", "LEDS", "LPTH", "MARK", "MVIS", "NNDM",
-    "NURO", "ONTX", "PLUG", "PT", "PTN", "PXS", "RETO", "SENS", "SHIP",
-    "SINT", "SOL", "SPI", "SQQQ","SYPR", "TELL","TENX", "TNXP", "UAVS", 
-    "VXRT", "WKHS", "WWR", "ZOM", "ROOT", "DOGZ"
-]
-df = update_df(stock_list)
+    return prices, percent_change, current_volume, new_average_volume, market_size, meets_conditions
 
 st.title('Stock Analysis Table')
-
 if st.button("Update and Display DataFrame"):
-    df = update_df(stock_list).sort_values(by=['Meets Conditions', 'Percent Increase'], ascending=False)
-    st.dataframe(df)
+    url = 'https://finance.yahoo.com/gainers?count=100'
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    stock_names = ticker_symbol(url)
+    prices, percent_change, current_volume, average_volume, market_size, meets_conditions = get_important_data(soup)
+
+    rounded_prices = [round(price, 3) for price in prices]
+    rounded_percent_change = [round(percent, 3) for percent in percent_change]
+    rounded_current_volume = [round(volume, 3) for volume in current_volume]
+
+    df = pd.DataFrame({
+        'Stock Name': stock_names,
+        'Prices ($)': rounded_prices,
+        'Percent Change (%)': rounded_percent_change,
+        'Current Volume': rounded_current_volume,
+        'Market Size': market_size,
+        'Meets Conditions': meets_conditions
+    })
+
+    sorted_df = df.sort_values(by='Meets Conditions', ascending=False)
+
+    st.dataframe(sorted_df)
